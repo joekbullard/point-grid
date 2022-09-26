@@ -10,9 +10,14 @@ def get_driver(input):
 
     Args:
         input (filepath): filepath of spatial data file with extension
+
+    Return:
+        driver (ogr.Driver()): File driver
     """
     extension = os.path.splitext(input)[1][1:]
 
+    # Assign correct driver based on extension
+    # TODO extend number of drivers
     if extension == "shp":
         print("ESRI Shapefile detected")
         driver_name = "ESRI Shapefile"
@@ -30,12 +35,23 @@ def get_driver(input):
     return driver
 
 
-def roundup(value, rounded):
+def roundup(value, rounded) -> int:
+    """Rounds value up to nearest whole number.
+    Used to ensure x/y start points fall inside boundary polygon
+
+    Args:
+        value (integer): input value to be rounded up
+        rounded (integer): number to round value up to
+
+    Returns:
+        integer: rounded up value
+    """
     return value if value % rounded == 0 else value + rounded - value % rounded
 
 
 def main():
 
+    # Argparse to define command line args
     parser = argparse.ArgumentParser(
         description="Fill polygon with regular point grid. Takes up to 4 arguments."
     )
@@ -58,35 +74,44 @@ def main():
 
     args = parser.parse_args()
 
+    # Assign args
     boundary_path = args.boundary_path
     out_path = args.output_path
     x_spacing = args.x_spacing
     y_spacing = args.y_spacing
 
-    out_driver = get_driver(boundary_path)
-    boundary_source = out_driver.Open(boundary_path)
+    # Load boundary features
+    boundary_driver = get_driver(boundary_path)
+    boundary_source = boundary_driver.Open(boundary_path)
     boundary_layer = boundary_source.GetLayer()
+
+    # Get initial feature
     feature = boundary_layer.GetNextFeature()
 
+    # Get EPSG of boundary layer and check it's EPSG:27700
     input_srs = boundary_layer.GetSpatialRef()
     input_epsg = input_srs.GetAttrValue("AUTHORITY", 1)
-
     if not input_epsg == "27700":
         print("Invalid EPSG, this function is for EPSG:27700 only")
 
+    # Load output file
     out_driver = get_driver(out_path)
 
+    # If output file already exists then delete
     if os.path.exists(out_path):
         out_driver.DeleteDataSource(out_path)
 
+    # Assign output EPSG:27700
     output_srs = osr.SpatialReference()
     output_srs.ImportFromEPSG(27700)
 
+    # Create output layer
     out_source = out_driver.CreateDataSource(out_path)
     out_layer = out_source.CreateLayer(
-        "peat_depth_points", output_srs, geom_type=ogr.wkbPoint
+        "regular_grid", output_srs, geom_type=ogr.wkbPoint
     )
 
+    # Create fields
     field_name = ogr.FieldDefn("sample_id", ogr.OFTString)
     field_name.SetWidth(20)
     field_easting = ogr.FieldDefn("easting", ogr.OFTInteger)
@@ -97,44 +122,56 @@ def main():
 
     count = 1
 
-    out_layer.StartTransaction()
-
     print(f"Creating {x_spacing}*{y_spacing} point grid")
 
+    # Iterate over features
     while feature:
-
+        # Start transaction - this results in better performance for gpkg
+        out_layer.StartTransaction()
+        # Get bounding box of polygon
         geom = feature.GetGeometryRef()
         (min_x, max_x, min_y, max_y) = geom.GetEnvelope()
         boundary_geom = feature.geometry()
 
+        # Get start x/y points from boundary geom
         start_x = roundup(min_x, x_spacing)
         start_y = roundup(min_y, y_spacing)
         end_x = max_x
         end_y = max_y
 
+        # Set starting y point
         y = start_y
 
         while y < end_y:
+            # Nested loop to create features row by row
             x = start_x
             while x < end_x:
+                # Create points
                 out_feature = ogr.Feature(out_layer.GetLayerDefn())
                 point_wkt = f"POINT({x} {y})"
                 point = ogr.CreateGeometryFromWkt(point_wkt)
                 if point.Intersects(boundary_geom):
-                    """put makepoint function here"""
+                    # Test if point falls within polygon boundary
+                    # If yes, create point, else skip to next point
                     out_feature.SetField("sample_id", f"PDS_{count}")
                     out_feature.SetField("easting", x)
                     out_feature.SetField("northing", y)
                     out_feature.SetGeometry(point)
                     out_layer.CreateFeature(out_feature)
                     count += 1
+
+                # Add x spacing on to x distance ahead of next iteration
                 x += x_spacing
 
+            # Add y spacing on to y distance ahead of next iteration
             y += y_spacing
 
+        # Commit transaction and iterate onto next feature
+        # TODO check if this is faster than commiting at end of loop?
+        out_layer.CommitTransaction()
         feature = boundary_layer.GetNextFeature()
 
-    out_layer.CommitTransaction()
+    # Close source
     out_source = None
 
 
