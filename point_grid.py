@@ -16,12 +16,12 @@ def get_driver(input):
     if extension == "shp":
         print("ESRI Shapefile detected")
         driver_name = "ESRI Shapefile"
-    elif extension == "gpkg ":
+    elif extension == "gpkg":
         print("GPKG detected")
         driver_name = "GPKG"
-    elif extension == "geojson":
-        print("GEOJson detected")
-        driver_name = "GEOJson"
+    elif extension == "GeoJSON":
+        print("GeoJSON detected")
+        driver_name = "GeoJSON"
     else:
         sys.exit("Unknown file type - please check input paramters")
 
@@ -66,21 +66,13 @@ def main():
     out_driver = get_driver(boundary_path)
     boundary_source = out_driver.Open(boundary_path)
     boundary_layer = boundary_source.GetLayer()
-    boundary_feat = boundary_layer.GetNextFeature()
-    boundary_geom = boundary_feat.geometry()
+    feature = boundary_layer.GetNextFeature()
 
     input_srs = boundary_layer.GetSpatialRef()
     input_epsg = input_srs.GetAttrValue("AUTHORITY", 1)
 
     if not input_epsg == "27700":
         print("Invalid EPSG, this function is for EPSG:27700 only")
-
-    (min_x, max_x, min_y, max_y) = boundary_layer.GetExtent()
-
-    start_x = roundup(min_x, x_spacing)
-    start_y = roundup(min_y, y_spacing)
-    end_x = max_x
-    end_y = max_y
 
     out_driver = get_driver(out_path)
 
@@ -103,25 +95,46 @@ def main():
     out_layer.CreateField(field_easting)
     out_layer.CreateField(field_northing)
 
-    y = start_y
     count = 1
 
-    while y < end_y:
-        x = start_x
-        while x < end_x:
-            out_feature = ogr.Feature(out_layer.GetLayerDefn())
-            point_wkt = "POINT(%f %f)" % (x, y)
-            point = ogr.CreateGeometryFromWkt(point_wkt)
-            if point.Intersects(boundary_geom):
-                out_feature.SetField("sample_id", f"PDS_{count}")
-                out_feature.SetField("easting", x)
-                out_feature.SetField("northing", y)
-                out_feature.SetGeometry(point)
-                out_layer.CreateFeature(out_feature)
-                count += 1
-            x += x_spacing
-        y += y_spacing
+    out_layer.StartTransaction()
 
+    print(f"Creating {x_spacing}*{y_spacing} point grid")
+
+    while feature:
+
+        geom = feature.GetGeometryRef()
+        (min_x, max_x, min_y, max_y) = geom.GetEnvelope()
+        boundary_geom = feature.geometry()
+
+        start_x = roundup(min_x, x_spacing)
+        start_y = roundup(min_y, y_spacing)
+        end_x = max_x
+        end_y = max_y
+
+        y = start_y
+
+        while y < end_y:
+            x = start_x
+            while x < end_x:
+                out_feature = ogr.Feature(out_layer.GetLayerDefn())
+                point_wkt = f"POINT({x} {y})"
+                point = ogr.CreateGeometryFromWkt(point_wkt)
+                if point.Intersects(boundary_geom):
+                    """put makepoint function here"""
+                    out_feature.SetField("sample_id", f"PDS_{count}")
+                    out_feature.SetField("easting", x)
+                    out_feature.SetField("northing", y)
+                    out_feature.SetGeometry(point)
+                    out_layer.CreateFeature(out_feature)
+                    count += 1
+                x += x_spacing
+
+            y += y_spacing
+
+        feature = boundary_layer.GetNextFeature()
+
+    out_layer.CommitTransaction()
     out_source = None
 
 
