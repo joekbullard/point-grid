@@ -1,3 +1,4 @@
 env/
 output.*
 test_poly.*
+.DS_Store
